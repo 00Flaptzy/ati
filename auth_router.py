@@ -196,7 +196,6 @@ async def get_user_profile(
 @limiter.limit("20/minute")
 async def check_token(
     request: Request,
-    authorization: str = Header(...),
     expires_at: int = Depends(check_token_expiery_depends),
 ):
     return {

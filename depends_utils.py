@@ -20,6 +20,7 @@ from db_utils import (
     get_habit_by_id,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Annotated
 
 load_dotenv()
 
@@ -55,13 +56,17 @@ def verify_credentials(username, email):
         raise HTTPException(status_code=400, detail="Invalid Email")
 
 
-async def get_user_depends(token=Header(...)) -> Users:
+async def get_user_depends(token: Annotated[str, Header(alias="token")]) -> Users:
     db = get_session()
     try:
-        token = prepare_authorization_token(token=token)
-        await authorize_token(token=token, db=db)
+        # Preparar el token (quitar "Bearer " si existe)
+        clean_token = token.replace("Bearer ", "") if token.startswith("Bearer ") else token
+        
+        # Verificar token en base de datos
+        await authorize_token(token=clean_token, db=db)
+        
         try:
-            payload = extract_payload(token)
+            payload = extract_payload(clean_token)
         except PyJWTError:
             raise HTTPException(status_code=400, detail="Invalid token")
 
@@ -89,14 +94,30 @@ async def get_habit_depends(habit_id: HabitIdProvidedSchema = Body(...)):
         await db.close()
 
 
-async def check_token_expiery_depends(token: TokenProvidedSchema = Header(...)) -> str:
+async def check_token_expiery_depends(token: Annotated[str, Header(alias="token")]) -> str:
+    """
+    Dependencia para verificar expiración del token.
+    Acepta el token en el header 'token'.
+    """
     try:
         db: Session = session_local()
-        token = prepare_authorization_token(token=token.token)
-        await authorize_token(token=token, db=db)
+        
+        # Preparar el token (quitar "Bearer " si existe)
+        clean_token = token.replace("Bearer ", "") if token.startswith("Bearer ") else token
+        
+        # Verificar token en base de datos
+        await authorize_token(token=clean_token, db=db)
 
-        payload = extract_payload(token=token)
-
-        return datetime.datetime.fromtimestamp(int(payload["expires"])).time()
+        # Extraer payload y obtener tiempo de expiración
+        payload = extract_payload(token=clean_token)
+        
+        # Formatear el tiempo de expiración
+        expires_timestamp = int(payload.get("expires", payload.get("exp")))
+        expires_time = datetime.datetime.fromtimestamp(expires_timestamp).strftime("%H:%M:%S")
+        
+        return expires_time
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token validation failed: {str(e)}")
     finally:
-        await db.close()
+        if db:
+            await db.close()

@@ -1,78 +1,108 @@
-from fastapi import FastAPI, Request, HTTPException
-from database import engine
-from models import Base, Users, JWTTable, HabitCompletions, Habits
-from apscheduler.schedulers.background import BackgroundScheduler
-from auth_router import auth_router
-from dotenv import load_dotenv
 import os
-from habit_router import habit_router
-from periodic_tasks import update_jwts, reset_all_habits, reset_potential_habit
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from utils_router import utils_router
-import time
-from typing import Any
-import hashlib
-from rate_limiter import limiter
-from slowapi.errors import RateLimitExceeded
-from slowapi import Limiter, _rate_limit_exceeded_handler
-import asyncio
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
 
+from database import engine
+from models import Base
+from auth_router import auth_router
+from habit_router import habit_router
+from utils_router import utils_router
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+
+from rate_limiter import limiter
+
+# =========================
+# ENV
+# =========================
 load_dotenv()
 
-
-async def periodic_task():
-    await update_jwts()
-    await reset_potential_habit()
-
-
-async def periodic_habit_resetting():
-    await reset_all_habits()
-
-
-scheduler_interval = AsyncIOScheduler()
-scheduler_interval.add_job(
-    periodic_task, "interval", seconds=int(os.getenv("PERIODIC_TASK_INTERVAL_SECONDS"))
-)
-scheduler_interval.add_job(
-    periodic_habit_resetting,
-    "cron",
-    hour=int(os.getenv("HABIT_RESETTING_HOURS")),
-    minute=0,
+# =========================
+# APP
+# =========================
+app = FastAPI(
+    title="Habit Tracker API",
+    version="1.0.0"
 )
 
-scheduler_interval.start()
-
-app = FastAPI()
-
+# =========================
+# RATE LIMITER
+# =========================
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-app.include_router(auth_router)
-app.include_router(habit_router)
-app.include_router(utils_router)
-
-
-@app.on_event("startup")
-async def startup_init_models():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
+# =========================
+# CORS (PRODUCCIÓN)
+# =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "127.0.0.1:3000", "0.0.0.0:3000"],
+    allow_origins=["*"],  # Cambia por tu frontend en producción
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# temporary
+# =========================
+# ROUTERS
+# =========================
+app.include_router(auth_router, prefix="/auth", tags=["Auth"])
+app.include_router(habit_router, prefix="/habits", tags=["Habits"])
+app.include_router(utils_router, prefix="/utils", tags=["Utils"])
+
+# =========================
+# SCHEDULER
+# =========================
+scheduler = AsyncIOScheduler()
 
 
-def clear_tables():
-    Users.__table__.drop(engine)
-    JWTTable.__table__.drop(engine)
-    Habits.__table__.drop(engine)
-    HabitCompletions.__table__.drop(engine)
+async def periodic_task():
+    from periodic_tasks import update_jwts, reset_potential_habit
+    await update_jwts()
+    await reset_potential_habit()
 
-# clear_tables()
+
+async def daily_habit_reset():
+    from periodic_tasks import reset_all_habits
+    await reset_all_habits()
+
+
+scheduler.add_job(
+    periodic_task,
+    trigger="interval",
+    seconds=int(os.getenv("PERIODIC_TASK_INTERVAL_SECONDS", "300")),
+)
+
+scheduler.add_job(
+    daily_habit_reset,
+    trigger="cron",
+    hour=int(os.getenv("HABIT_RESETTING_HOURS", "0")),
+    minute=0,
+)
+
+# =========================
+# STARTUP / SHUTDOWN
+# =========================
+@app.on_event("startup")
+async def on_startup():
+    # DB
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Scheduler (IMPORTANTE: aquí, no arriba)
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    scheduler.shutdown()
+
+
+# =========================
+# ROOT
+# =========================
+@app.get("/")
+async def root():
+    return {"status": "ok"}

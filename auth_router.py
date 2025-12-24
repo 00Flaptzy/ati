@@ -247,6 +247,10 @@ async def change_password(
 @limiter.limit("20/minute")
 async def check_token(
     request: Request,
-    expires_at=Depends(check_token_expiery_depends)
+    authorization: str = Header(...),
+    expires_at=Depends(check_token_expiery_depends),
 ):
-    return expires_at
+    return {
+        "valid": True,
+        "expires_at": expires_at
+    }
